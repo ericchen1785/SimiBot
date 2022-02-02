@@ -1,21 +1,3 @@
-library("tidyverse")
-library("DT")
-library("readxl")
-library("writexl")
-library("dplyr")
-library("tidytext")
-library("text2vec")
-library("readr")
-library("stringr")
-library("stopwords")
-library("textstem")
-library("tm")
-library("NLP")
-library("tibble")
-library("gsubfn")
-library("textmineR")
-
-
 function(input, output, session) {
   
   uploaded_txt <- eventReactive(c(input$uploaded_txt),
@@ -30,6 +12,88 @@ function(input, output, session) {
                                   csv_target
                                          })
   
+  observeEvent(input$reloadButton, {
+    session$reload()
+  })
+
+  output$scoringresultMenu <- renderMenu({
+    if(
+      c((!is.null(input$uploaded_txt)|nchar(input$paste_source)>0) & (!is.null(input$uploaded_csv)|nchar(input$paste_target)>0) & input$anaylze_data>0)
+      )
+      menuItem("Scoring Result", tabName = "scoringresult", icon = icon("chart-bar"))
+    })
+
+
+  output$clusteringresultMenu <- renderMenu({
+    if(
+      c((!is.null(input$uploaded_txt)|nchar(input$paste_source)>0) & (!is.null(input$uploaded_csv)|nchar(input$paste_target)>0) & input$anaylze_data>0)
+    )
+      menuItem("Clustering Result", tabName = "clusteringresult", icon = icon("chart-bar"))
+  })
+  
+  
+  
+  output$show_plot_cluster <- renderUI({
+    
+    if(
+      c((!is.null(input$uploaded_txt)|nchar(input$paste_source)>0) & (!is.null(input$uploaded_csv)|nchar(input$paste_target)>0))
+    )
+    
+    fluidRow(style = "margin-bottom:10px;",
+             column(offset = 1, width = 10,
+                    awesomeCheckbox(
+                      inputId = "plot_cluster",
+                      label = "Optimal Number of Clusters Suggestion",
+                      value = FALSE,
+                      status = "primary"
+                    ),
+                    conditionalPanel(
+                      condition = "input.plot_cluster == '1'",
+                      withSpinner(
+                        plotOutput("plot1",
+                                   width = "100%",
+                                   height = "200px"),
+                        type = 1,
+                        color = "#759EC3",
+                        size = 1)
+                    )
+             )
+    )
+  })
+  
+    
+    
+  
+
+  
+  
+  
+  observeEvent(input$anaylze_data, {
+    hideTab(inputId = "tabs", target = "home")
+  })
+  
+  
+  observeEvent(input$helpButton, {
+    updateTabItems(session, "tabs", "help")
+  })
+  
+  observeEvent(input$anaylze_data, {
+    updateTabItems(session, "tabs", "scoringresult")
+  })
+  
+  observeEvent(input$clusterButton, {
+    updateTabItems(session, "tabs", "clusteringresult")
+  })
+  
+  observeEvent(input$scoreButton, {
+    updateTabItems(session, "tabs", "scoringresult")
+  })
+  
+  output$show_stopwords_source <- renderText({
+    stopwords::stopwords("en", source = input$stopwords_source)
+  })
+  
+  # FOR DOWNLOAD #
   output$download_txt_template <- downloadHandler(
     filename = function(){
       paste0("Simi Bot Template_Source.txt")
@@ -74,159 +138,48 @@ function(input, output, session) {
       file.copy("data/Simi Bot Tutorial.pdf", file)
     }
   )
+  # DOWNLOAD END
   
+  #PLOP OUTPUT
+  output$plot1 <- renderPlot({
+    
+    input$plot_cluster
+    
+    cdist_data_scale <- optimize_fun(input$source_type, uploaded_txt, input$paste_source, input$stopwords_source, input$delete_words, input$extra_words, input$target_type, uploaded_csv, input$paste_target, input$number_of_clusters, input$n_gram_length)
+    
+    optimal_number_plot <- fviz_nbclust(cdist_data_scale, kmeans, method = "silhouette", k.max = 20) +
+      labs(subtitle = "Silhouette Method")
+    
+    plot(optimal_number_plot)
+    
+  })
+  
+  
+  # FIRST OUTPUT
   output$group_number <- renderText({
-    
+
     input$anaylze_data
-    
-    uploaded_txt <- isolate(uploaded_txt())
-    uploaded_csv <- isolate(uploaded_csv())   
-    
-    # create source dataframe, row combined
-    source_df <- tibble(title = "Source", description=uploaded_txt)
-    source_n_target <- rbind(source_df,uploaded_csv)
-    
-    # lower case, remove symbols/numbers/stopwords/single char/spaces, lemmatization
-    prep_fun = function(x) {
-      x = str_to_lower(x)
-      x = str_replace_all(x, "[^[:alnum:]]", " ")
-      x = gsub(patter="\\d", replace=" ", x)
-      x = removeWords(x, stopwords())
-      x = gsub(patter="\\b[A-z]\\b{1}", replace=" ", x)
-      x= str_replace_all(x, "\\s+", " ")
-      x = lemmatize_strings(x)}
-    
-    # clean the source and target description, save as a new column
-    source_n_target$description_clean = prep_fun(source_n_target$description)
-    
-    # use vocabulary_based vectorization
-    itoken_source <- itoken(source_n_target$description_clean, progressbar = FALSE)
-    v_source <- create_vocabulary(itoken_source)
-    vectorizer_source <- vocab_vectorizer(v_source)
-    
-    # apply TF-IDF transformation
-    dtm_source <- create_dtm(itoken_source, vectorizer_source)
-    tfidf <- TfIdf$new()
-    dtm_tfidf_source <- fit_transform(dtm_source, tfidf)
-    
-    # compute similarity-score against each row, saved as a new column
-    source_tfidf_cos_sim <- round(sim2(x = dtm_tfidf_source, method = "cosine", norm = "l2"), digits = 4)
-    source_n_target["similarity_score"] <- source_tfidf_cos_sim[1:nrow(source_tfidf_cos_sim)]
-    
-    # drop the source row
-    target_w_score <- source_n_target[-c(1), ] 
-    
-    # cluster starts; create a document term matrix 
-    dtm <- CreateDtm(doc_vec = target_w_score$description, # character vector of documents
-                     doc_names = target_w_score$title, # document names
-                     ngram_window = c(1, input$n_gram_length), # minimum and maximum n-gram length
-                     verbose = FALSE) # Turn off status bar for this demo
-    
-    # construct the matrix of term counts to get the IDF vector
-    tf_mat <- TermDocFreq(dtm)
-    
-    # TF-IDF and cosine similarity
-    tfidf <- t(dtm[ , tf_mat$term ]) * tf_mat$idf
-    tfidf <- t(tfidf)
-    csim <- tfidf / sqrt(rowSums(tfidf * tfidf))
-    csim <- csim %*% t(csim)
-    cdist <- as.dist(1 - csim)
-    hc <- hclust(cdist, "ward.D")
-    clustering <- cutree(hc, k = input$number_of_clusters)
-    
-    # cluster ends; format as dataframe and bind with previous scoring result
-    df_cluster <- as.data.frame(clustering,stringsAsFactors = default.stringsAsFactors)
-    source_target_cluster <- cbind(target_w_score, df_cluster)
-    
-    # drop col description_clean, drop row names (tentative)
-    source_target_cluster <- subset(source_target_cluster, select = -c(3))
-    # source_target_cluster <- source_target_cluster[2:nrow(source_target_cluster), ]
+
+    source_target_cluster <- main_fun(input$source_type, uploaded_txt, input$paste_source, input$stopwords_source, input$delete_words, input$extra_words, input$target_type, uploaded_csv, input$paste_target, input$number_of_clusters, input$n_gram_length)
     
     # calculate the mean similarity scoring by group; determine the cluster of max mean
     mean_by_cluster <- aggregate(source_target_cluster[, 3], list(source_target_cluster$clustering), mean)
     mean_by_cluster <- subset(mean_by_cluster, select = -c(1))
     max_cluster <- apply(mean_by_cluster,2,which.max)
-    
+
     paste("Your source belongs to Cluster Group ", max_cluster)
-
   })
-  
-  
-
+    
+  #SECOND OUTPUT
   output$scoring_result <- renderDT({
     
     input$anaylze_data
     
-    uploaded_txt <- isolate(uploaded_txt())
-    uploaded_csv <- isolate(uploaded_csv())   
-    
-    # create source dataframe, row combined
-    source_df <- tibble(title = "Source", description=uploaded_txt)
-    source_n_target <- rbind(source_df,uploaded_csv)
-    
-    # lower case, remove symbols/numbers/stopwords/single char/spaces, lemmatization
-    prep_fun = function(x) {
-      x = str_to_lower(x)
-      x = str_replace_all(x, "[^[:alnum:]]", " ")
-      x = gsub(patter="\\d", replace=" ", x)
-      x = removeWords(x, stopwords())
-      x = gsub(patter="\\b[A-z]\\b{1}", replace=" ", x)
-      x= str_replace_all(x, "\\s+", " ")
-      x = lemmatize_strings(x)}
-    
-    # clean the source and target description, save as a new column
-    source_n_target$description_clean = prep_fun(source_n_target$description)
-    
-    # use vocabulary_based vectorization
-    itoken_source <- itoken(source_n_target$description_clean, progressbar = FALSE)
-    v_source <- create_vocabulary(itoken_source)
-    vectorizer_source <- vocab_vectorizer(v_source)
-    
-    # apply TF-IDF transformation
-    dtm_source <- create_dtm(itoken_source, vectorizer_source)
-    tfidf <- TfIdf$new()
-    dtm_tfidf_source <- fit_transform(dtm_source, tfidf)
-    
-    # compute similarity-score against each row, saved as a new column
-    source_tfidf_cos_sim <- round(sim2(x = dtm_tfidf_source, method = "cosine", norm = "l2"), digits = 4)
-    source_n_target["similarity_score"] <- source_tfidf_cos_sim[1:nrow(source_tfidf_cos_sim)]
-    
-    # drop the source row
-    target_w_score <- source_n_target[-c(1), ] 
-    
-    # cluster starts; create a document term matrix 
-    dtm <- CreateDtm(doc_vec = target_w_score$description, # character vector of documents
-                     doc_names = target_w_score$title, # document names
-                     ngram_window = c(1, input$n_gram_length), # minimum and maximum n-gram length
-                     verbose = FALSE) # Turn off status bar for this demo
-    
-    # construct the matrix of term counts to get the IDF vector
-    tf_mat <- TermDocFreq(dtm)
-    
-    # TF-IDF and cosine similarity
-    tfidf <- t(dtm[ , tf_mat$term ]) * tf_mat$idf
-    tfidf <- t(tfidf)
-    csim <- tfidf / sqrt(rowSums(tfidf * tfidf))
-    csim <- csim %*% t(csim)
-    cdist <- as.dist(1 - csim)
-    hc <- hclust(cdist, "ward.D")
-    clustering <- cutree(hc, k = input$number_of_clusters)
-    
-    # cluster ends; format as dataframe and bind with previous scoring result
-    df_cluster <- as.data.frame(clustering,stringsAsFactors = default.stringsAsFactors)
-    source_target_cluster <- cbind(target_w_score, df_cluster)
-    
-    # drop col description_clean, drop row names (tentative)
-    source_target_cluster <- subset(source_target_cluster, select = -c(3))
-    # source_target_cluster <- source_target_cluster[2:nrow(source_target_cluster), ]
-    
-    # calculate the mean similarity scoring by group; determine the cluster of max mean
-    mean_by_cluster <- aggregate(source_target_cluster[, 3], list(source_target_cluster$clustering), mean)
-    mean_by_cluster <- subset(mean_by_cluster, select = -c(1))
-    max_cluster <- apply(mean_by_cluster,2,which.max)
-    
+    source_target_cluster <- main_fun(input$source_type, uploaded_txt, input$paste_source, input$stopwords_source, input$delete_words, input$extra_words, input$target_type, uploaded_csv, input$paste_target, input$number_of_clusters, input$n_gram_length)
+      
     # sort the dataframe by similarity score, saved as a new csv file (optional)
     result_sorted <- source_target_cluster[order(-source_target_cluster[,3]),]
+    result_sorted <- mutate(result_sorted,similarity_score=percent(similarity_score, accuracy = 0.01))
 
     result_sorted %>%
       datatable(
@@ -259,100 +212,13 @@ function(input, output, session) {
       )
   })
   
-  
+  # THIRD OUTPUT
   output$clustering_result <- renderDT({
-    
-    input$anaylze_data
-    
-    uploaded_txt <- isolate(uploaded_txt())
-    uploaded_csv <- isolate(uploaded_csv())   
-    
-    # create source dataframe, row combined
-    source_df <- tibble(title = "Source", description=uploaded_txt)
-    source_n_target <- rbind(source_df,uploaded_csv)
-    
-    # lower case, remove symbols/numbers/stopwords/single char/spaces, lemmatization
-    prep_fun = function(x) {
-      x = str_to_lower(x)
-      x = str_replace_all(x, "[^[:alnum:]]", " ")
-      x = gsub(patter="\\d", replace=" ", x)
-      x = removeWords(x, stopwords())
-      x = gsub(patter="\\b[A-z]\\b{1}", replace=" ", x)
-      x= str_replace_all(x, "\\s+", " ")
-      x = lemmatize_strings(x)}
-    
-    # clean the source and target description, save as a new column
-    source_n_target$description_clean = prep_fun(source_n_target$description)
-    
-    # use vocabulary_based vectorization
-    itoken_source <- itoken(source_n_target$description_clean, progressbar = FALSE)
-    v_source <- create_vocabulary(itoken_source)
-    vectorizer_source <- vocab_vectorizer(v_source)
-    
-    # apply TF-IDF transformation
-    dtm_source <- create_dtm(itoken_source, vectorizer_source)
-    tfidf <- TfIdf$new()
-    dtm_tfidf_source <- fit_transform(dtm_source, tfidf)
-    
-    # compute similarity-score against each row, saved as a new column
-    source_tfidf_cos_sim <- round(sim2(x = dtm_tfidf_source, method = "cosine", norm = "l2"), digits = 4)
-    source_n_target["similarity_score"] <- source_tfidf_cos_sim[1:nrow(source_tfidf_cos_sim)]
-    
-    # drop the source row
-    target_w_score <- source_n_target[-c(1), ] 
-    
-    # cluster starts; create a document term matrix 
-    dtm <- CreateDtm(doc_vec = target_w_score$description, # character vector of documents
-                     doc_names = target_w_score$title, # document names
-                     ngram_window = c(1, input$n_gram_length), # minimum and maximum n-gram length
-                     verbose = FALSE) # Turn off status bar for this demo
-    
-    # construct the matrix of term counts to get the IDF vector
-    tf_mat <- TermDocFreq(dtm)
-    
-    # TF-IDF and cosine similarity
-    tfidf <- t(dtm[ , tf_mat$term ]) * tf_mat$idf
-    tfidf <- t(tfidf)
-    csim <- tfidf / sqrt(rowSums(tfidf * tfidf))
-    csim <- csim %*% t(csim)
-    cdist <- as.dist(1 - csim)
-    hc <- hclust(cdist, "ward.D")
-    clustering <- cutree(hc, k = input$number_of_clusters)
-    
-    # cluster ends; format as dataframe and bind with previous scoring result
-    df_cluster <- as.data.frame(clustering,stringsAsFactors = default.stringsAsFactors)
-    source_target_cluster <- cbind(target_w_score, df_cluster)
-    
-    # drop col description_clean, drop row names (tentative)
-    source_target_cluster <- subset(source_target_cluster, select = -c(3))
-    # source_target_cluster <- source_target_cluster[2:nrow(source_target_cluster), ]
-    
-    # calculate the mean similarity scoring by group; determine the cluster of max mean
-    mean_by_cluster <- aggregate(source_target_cluster[, 3], list(source_target_cluster$clustering), mean)
-    mean_by_cluster <- subset(mean_by_cluster, select = -c(1))
-    max_cluster <- apply(mean_by_cluster,2,which.max)
-    
-    # generate cluster summary
-    p_words <- colSums(dtm) / sum(dtm)
-    
-    # drop all words that don't appear in the cluster
-    cluster_words <- lapply(unique(clustering), function(x){
-      rows <- dtm[ clustering == x , ]
-      rows <- rows[ , colSums(rows) > 0 ]
-      colSums(rows) / sum(rows) - p_words[ colnames(rows) ]
-    })
-    
-    # create summary with top words in each cluster, saved as a new csv file (optional)
-    cluster_summary <- data.frame(cluster = unique(clustering),
-                                  mean = round(mean_by_cluster[,1], digits = 4),
-                                  size = as.numeric(table(clustering)),
-                                  top_words =
-                                    sapply(cluster_words, 
-                                           function(d){
-                                             paste(names(d)[order(d, decreasing = TRUE) ][ 1:input$number_of_top_words ],collapse = ", ")
-                                           }),
-                                  stringsAsFactors = FALSE)
 
+    input$anaylze_data
+
+    cluster_summary <- summary_fun(input$source_type, uploaded_txt, input$paste_source, input$stopwords_source, input$delete_words, input$extra_words, input$target_type, uploaded_csv, input$paste_target, input$number_of_clusters, input$n_gram_length, input$number_of_top_words)
+    
     cluster_summary %>%
       datatable(
         rownames = NULL,
@@ -371,5 +237,5 @@ function(input, output, session) {
           buttons = c('copy', 'csv', 'excel', 'pdf')
           )
         )
-  })    
+  })
 }
